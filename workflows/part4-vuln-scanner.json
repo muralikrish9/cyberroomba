@@ -1,0 +1,340 @@
+{
+  "name": "Part4 Vulnerability Scanner",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": [
+          {
+            "mode": "everyDay",
+            "hour": 9,
+            "minute": 30
+          }
+        ]
+      },
+      "id": "Cron_Trigger",
+      "name": "Cron",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const jobId = `vuln_${Date.now()}`; const data = getWorkflowStaticData('global'); data.jobId = jobId; return [{ json: { jobId, status: 'running', startedAt: new Date().toISOString() } }];"
+      },
+      "id": "FN_Start",
+      "name": "Start Job",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "job_runs",
+        "fields": "workflow,status,startedAt"
+      },
+      "id": "Mongo_LogJob",
+      "name": "Log Job",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 4,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "recon_results",
+        "aggregate": "[{\n  \"$match\": {\n    \"isAlive\": true,\n    \"lastChecked\": { \"$exists\": true }\n  }\n}, {\n  \"$limit\": 25\n}]"
+      },
+      "id": "Mongo_FetchHosts",
+      "name": "Fetch Alive Hosts",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 4,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const data = getWorkflowStaticData('global'); return items.map(item => ({ json: { ...item.json, jobId: data.jobId } }));"
+      },
+      "id": "FN_AttachJob",
+      "name": "Attach Job",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1
+      },
+      "id": "Split_Batches",
+      "name": "Split In Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [1080, 300]
+    },
+    {
+      "parameters": {
+        "command": "C:/Tools/bin/nuclei.exe",
+        "commandArguments": "-u={{$json[\"subdomain\"] ?? $json[\"host\"]}} -json -severity high,critical",
+        "options": {
+          "output": "file",
+          "outputFileName": "={{$json[\"jobId\"]}}/nuclei-{{$json[\"subdomain\"] ?? $json[\"host\"]}}.json"
+        }
+      },
+      "id": "CMD_Nuclei",
+      "name": "Scan Nuclei",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1300, 140]
+    },
+    {
+      "parameters": {
+        "command": "C:/Program Files (x86)/Nmap/nmap.exe",
+        "commandArguments": "-sV -Pn --script vulners -oX - {{$json[\"ip\"]}}",
+        "options": {
+          "output": "file",
+          "outputFileName": "={{$json[\"jobId\"]}}/nmap-{{$json[\"ip\"]}}.xml"
+        }
+      },
+      "id": "CMD_Nmap",
+      "name": "Scan Nmap",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1300, 300]
+    },
+    {
+      "parameters": {
+        "command": "C:/Tools/bin/httpx.exe",
+        "commandArguments": "-u={{$json[\"subdomain\"]}} -json -status-code -title",
+        "options": {
+          "output": "file",
+          "outputFileName": "={{$json[\"jobId\"]}}/httpx-{{$json[\"subdomain\"]}}.json"
+        }
+      },
+      "id": "CMD_Httpx",
+      "name": "Refresh httpx",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1300, 460]
+    },
+    {
+      "parameters": {
+        "functionCode": "const { VulnerabilityParsers } = require('/data/dist/vuln/parse.js'); const { CveMatcher } = require('/data/dist/vuln/matcher.js'); const fs = require('fs'); const path = require('path'); const jobId = $json.jobId; const baseDir = process.env.VULN_RAW_DIR || 'data/vuln/raw'; const hostId = $json._id; const root = path.join(baseDir, jobId); function readJson(name) { const file = path.join(root, name); if (!fs.existsSync(file)) return undefined; const raw = fs.readFileSync(file, 'utf-8'); try { return JSON.parse(raw); } catch { return undefined; } } const nuclei = readJson(`nuclei-${$json.subdomain ?? $json.host}.json`); const nmap = readJson(`nmap-${$json.ip}.json`); const feedPath = process.env.NVD_FEED_PATH || path.join('config', 'mock-vuln', 'nvd.json'); const nvdRaw = fs.existsSync(feedPath) ? JSON.parse(fs.readFileSync(feedPath, 'utf-8')) : undefined; const rawFindings = VulnerabilityParsers.mergeFindings( VulnerabilityParsers.parseNucleiResults({ reconId: hostId, jobId, raw: nuclei }), VulnerabilityParsers.parseNmapVulnerabilities({ reconId: hostId, jobId, raw: nmap }), ); const index = CveMatcher.buildCveIndex(CveMatcher.parseNvdFeed(nvdRaw)); const enriched = CveMatcher.enrichVulnerabilitiesWithNvd(rawFindings, index); return enriched.map((finding) => ({ json: finding }));"
+      },
+      "id": "FN_Normalize",
+      "name": "Parse Findings",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "vulnerabilities"
+      },
+      "id": "Mongo_InsertVulns",
+      "name": "Insert Vulns",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 4,
+      "position": [1820, 240]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "collection": "recon_results",
+        "updateKey": "_id"
+      },
+      "id": "Mongo_UpdateRecon",
+      "name": "Update Recon",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 4,
+      "position": [1820, 420]
+    },
+    {
+      "parameters": {
+        "functionCode": "const data = getWorkflowStaticData('global'); return [{ json: { jobId: data.jobId, finishedAt: new Date().toISOString(), status: 'success' } }];"
+      },
+      "id": "FN_Complete",
+      "name": "Complete Job",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [2060, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "collection": "job_runs",
+        "updateKey": "jobId"
+      },
+      "id": "Mongo_Finalize",
+      "name": "Finalize Job",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 4,
+      "position": [2300, 300]
+    }
+  ],
+  "connections": {
+    "Cron": {
+      "main": [
+        [
+          {
+            "node": "Start Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Job": {
+      "main": [
+        [
+          {
+            "node": "Log Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Job": {
+      "main": [
+        [
+          {
+            "node": "Fetch Alive Hosts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Alive Hosts": {
+      "main": [
+        [
+          {
+            "node": "Attach Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Job": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split In Batches": {
+      "main": [
+        [
+          {
+            "node": "Scan Nuclei",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Scan Nmap",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Refresh httpx",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scan Nuclei": {
+      "main": [
+        [
+          {
+            "node": "Parse Findings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scan Nmap": {
+      "main": [
+        [
+          {
+            "node": "Parse Findings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh httpx": {
+      "main": [
+        [
+          {
+            "node": "Parse Findings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Findings": {
+      "main": [
+        [
+          {
+            "node": "Insert Vulns",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Recon",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Vulns": {
+      "main": [
+        [
+          {
+            "node": "Complete Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Recon": {
+      "main": [
+        [
+          {
+            "node": "Complete Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Complete Job": {
+      "main": [
+        [
+          {
+            "node": "Finalize Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  }
+}

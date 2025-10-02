@@ -1,0 +1,18 @@
+version: '3.8'
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    restart: unless-stopped
+    ports:
+      - '5678:5678'
+    env_file:
+      - .env.local
+    environment:
+      DB_TYPE: mongodb
+      DB_MONGODB_CONNECTION_STRING: "${MONGODB_URI}"
+      DB_MONGODB_DATABASE: "${MONGODB_DB_NAME:-cyberroomba}"
+      N8N_ENCRYPTION_KEY: "${N8N_ENCRYPTION_KEY}"
+    volumes:
+      - ./data/n8n:/home/node/.n8n
+      - ./workflows:/data/workflows
+      - ./config:/data/config

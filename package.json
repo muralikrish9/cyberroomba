@@ -1,0 +1,48 @@
+{
+  "name": "cyberroomba",
+  "version": "1.0.0",
+  "description": "Automation workflows and tooling for bug bounty recon",
+  "type": "module",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "lint": "node -e \"console.log('No lint configured')\"",
+    "typecheck": "tsc --noEmit",
+    "schema:generate": "ts-node src/schemas/index.ts",
+    "build": "tsc",
+    "scope:fixtures": "npm run build --silent && node dist/scope/run-fixture-check.js",
+    "recon:fixtures": "npm run build --silent && node dist/recon/run-fixture-check.js",
+    "vuln:fixtures": "npm run build --silent && node dist/vuln/run-fixture-check.js",
+    "scope:run": "npm run build && node dist/cli/scope.js",
+    "recon:run": "npm run build && node dist/cli/recon.js",
+    "vuln:run": "npm run build && node dist/cli/vuln.js",
+    "reports:run": "npm run build && node dist/cli/reports.js",
+    "attacks:run": "npm run build && node dist/cli/attacks.js",
+    "pipeline:run": "npm run scope:run && npm run recon:run && npm run vuln:run && npm run attacks:run && npm run reports:run"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/muralikrish9/cyberroomba.git"
+  },
+  "keywords": [],
+  "author": "muralikrish9",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/muralikrish9/cyberroomba/issues"
+  },
+  "homepage": "https://github.com/muralikrish9/cyberroomba#readme",
+  "dependencies": {
+    "commander": "^14.0.1",
+    "dotenv": "^17.2.3",
+    "mongodb": "^6.20.0",
+    "pino": "^9.12.0",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

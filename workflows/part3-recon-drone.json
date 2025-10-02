@@ -1,0 +1,361 @@
+{
+  "name": "Part3 Recon Drone",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": [
+          {
+            "mode": "everyHour",
+            "minute": 5
+          }
+        ]
+      },
+      "id": "Cron_Trigger",
+      "name": "Cron",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const jobId = `recon_${Date.now()}`;\nconst data = getWorkflowStaticData('global');\ndata.jobId = jobId;\nreturn [{ json: { jobId, status: 'running', startedAt: new Date().toISOString() } }];"
+      },
+      "id": "FN_JobStart",
+      "name": "Start Job",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "job_runs",
+        "fields": "workflow,status,startedAt"
+      },
+      "id": "Mongo_JobInsert",
+      "name": "Log Job",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 4,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "targets",
+        "aggregate": "[{\n  \"$match\": {\n    \"status\": \"active\",\n    \"asset.type\": { \"$in\": [\"domain\", \"hostname\", \"cidr\", \"ip\"] }\n  }\n}, {\n  \"$limit\": 20\n}]"
+      },
+      "id": "Mongo_FetchTargets",
+      "name": "Fetch Targets",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 4,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const data = getWorkflowStaticData('global');\nreturn items.map(item => ({ json: { ...item.json, jobId: data.jobId } }));"
+      },
+      "id": "FN_AttachJob",
+      "name": "Attach Job",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1
+      },
+      "id": "Split_Batches",
+      "name": "Split In Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// write merged host list for CLI tools\nconst fs = require('fs');\nconst path = require('path');\nconst baseDir = process.env.RECON_RAW_DIR || 'data/recon/raw';\nconst jobId = $json.jobId;\nconst domain = $json.asset.value;\nconst dir = path.join(baseDir, jobId);\nif (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }\nconst hostFile = path.join(dir, `${domain}-hosts.txt`);\nconst seeds = [domain];\nfs.writeFileSync(hostFile, seeds.join('\n'));\nreturn [{ json: { ...$json, hostFile, rawDir: dir } }];"
+      },
+      "id": "FN_Prepare",
+      "name": "Prepare Host List",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [1320, 300]
+    },
+    {
+      "parameters": {
+        "command": "C:/Tools/bin/subfinder.exe",
+        "commandArguments": "-d={{$json[\"asset\"][\"value\"]}} -all -json",
+        "options": {
+          "output": "file",
+          "outputFileName": "={{$json[\"rawDir\"]}}/subfinder-{{$json[\"asset\"][\"value\"]}}.json"
+        }
+      },
+      "id": "CMD_Subfinder",
+      "name": "Subfinder",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1560, 120]
+    },
+    {
+      "parameters": {
+        "command": "C:/Tools/bin/amass.exe",
+        "commandArguments": "enum -d={{$json[\"asset\"][\"value\"]}} -json",
+        "options": {
+          "output": "file",
+          "outputFileName": "={{$json[\"rawDir\"]}}/amass-{{$json[\"asset\"][\"value\"]}}.json"
+        }
+      },
+      "id": "CMD_Amass",
+      "name": "Amass",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1560, 280]
+    },
+    {
+      "parameters": {
+        "command": "C:/Tools/bin/httpx.exe",
+        "commandArguments": "-l={{$json[\"hostFile\"]}} -json -status-code -title -tech-detect",
+        "options": {
+          "output": "file",
+          "outputFileName": "={{$json[\"rawDir\"]}}/httpx-{{$json[\"asset\"][\"value\"]}}.json"
+        }
+      },
+      "id": "CMD_Httpx",
+      "name": "httpx",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1560, 440]
+    },
+    {
+      "parameters": {
+        "url": "https://api.securitytrails.com/v1/domain/{{$json[\"asset\"][\"value\"]}}",
+        "responseFormat": "json",
+        "options": {
+          "headers": {
+            "APIKEY": "={{$credentials.securitytrailsApiKey}}"
+          },
+          "retryOnFail": true,
+          "maxRetries": 2
+        }
+      },
+      "id": "HTTP_SecurityTrails",
+      "name": "SecurityTrails",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1800, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const { normalizeRecon } = require('/data/dist/recon/normalize.js');\nconst fs = require('fs');\nconst path = require('path');\nconst domain = $json.asset.value;\nconst baseDir = $json.rawDir;\nfunction load(tool) {\n  const fp = path.join(baseDir, `${tool}-${domain}.json`);\n  return fs.existsSync(fp) ? JSON.parse(fs.readFileSync(fp, 'utf-8')) : undefined;\n}\nconst results = normalizeRecon({\n  jobId: $json.jobId,\n  targetId: $json._id,\n  primaryTarget: domain,\n  subfinder: load('subfinder'),\n  amass: load('amass'),\n  httpx: load('httpx'),\n  securitytrails: items[0].json\n});\nreturn results.map((recon) => ({ json: recon }));"
+      },
+      "id": "FN_NormalizeRecon",
+      "name": "Normalize Recon",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [2040, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "recon_results"
+      },
+      "id": "Mongo_InsertRecon",
+      "name": "Insert Recon",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 4,
+      "position": [2280, 240]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "collection": "targets",
+        "updateKey": "_id"
+      },
+      "id": "Mongo_UpdateTarget",
+      "name": "Update Target",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 4,
+      "position": [2280, 420]
+    },
+    {
+      "parameters": {
+        "functionCode": "const data = getWorkflowStaticData('global');\nreturn [{ json: { jobId: data.jobId, finishedAt: new Date().toISOString(), status: 'success' } }];"
+      },
+      "id": "FN_JobComplete",
+      "name": "Complete Job",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [2520, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "collection": "job_runs",
+        "updateKey": "jobId"
+      },
+      "id": "Mongo_FinalizeJob",
+      "name": "Finalize Job",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 4,
+      "position": [2760, 300]
+    }
+  ],
+  "connections": {
+    "Cron": {
+      "main": [
+        [
+          {
+            "node": "Start Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Job": {
+      "main": [
+        [
+          {
+            "node": "Log Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Job": {
+      "main": [
+        [
+          {
+            "node": "Fetch Targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Targets": {
+      "main": [
+        [
+          {
+            "node": "Attach Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Job": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split In Batches": {
+      "main": [
+        [
+          {
+            "node": "Prepare Host List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Host List": {
+      "main": [
+        [
+          {
+            "node": "Subfinder",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Amass",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "httpx",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "SecurityTrails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SecurityTrails": {
+      "main": [
+        [
+          {
+            "node": "Normalize Recon",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Recon": {
+      "main": [
+        [
+          {
+            "node": "Insert Recon",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Target",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Recon": {
+      "main": [
+        [
+          {
+            "node": "Complete Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Target": {
+      "main": [
+        [
+          {
+            "node": "Complete Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Complete Job": {
+      "main": [
+        [
+          {
+            "node": "Finalize Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  }
+}

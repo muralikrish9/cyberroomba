@@ -1,0 +1,213 @@
+{
+  "name": "Part2 Scope Intake",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": [
+          {
+            "mode": "everyDay",
+            "hour": 8,
+            "minute": 0
+          }
+        ]
+      },
+      "id": "Cron_Trigger",
+      "name": "Cron",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://bugcrowd.com/programs.json",
+        "responseFormat": "json",
+        "options": {
+          "fullResponse": true,
+          "retryOnFail": true,
+          "maxRetries": 3,
+          "retryDelay": 2000
+        }
+      },
+      "id": "HTTP_Bugcrowd",
+      "name": "Fetch Bugcrowd",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [220, 100]
+    },
+    {
+      "parameters": {
+        "url": "https://hackerone.com/programs.json",
+        "responseFormat": "json",
+        "options": {
+          "headers": {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json"
+          },
+          "fullResponse": true,
+          "retryOnFail": true,
+          "maxRetries": 3,
+          "retryDelay": 2000
+        }
+      },
+      "id": "HTTP_HackerOne",
+      "name": "Fetch HackerOne",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.intigriti.com/core/programs",
+        "responseFormat": "json",
+        "options": {
+          "fullResponse": true,
+          "retryOnFail": true,
+          "maxRetries": 3,
+          "retryDelay": 2000
+        }
+      },
+      "id": "HTTP_Intigriti",
+      "name": "Fetch Intigriti",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [220, 500]
+    },
+    {
+      "parameters": {
+        "functionCode": "const { normalizeAllPlatforms } = require('/data/dist/scope/parsers.js');\n\nconst bugcrowd = items.find(item => item.json.source === 'bugcrowd')?.json.payload;\nconst hackerone = items.find(item => item.json.source === 'hackerone')?.json.payload;\nconst intigriti = items.find(item => item.json.source === 'intigriti')?.json.payload;\n\nconst targets = normalizeAllPlatforms({ bugcrowd, hackerone, intigriti });\n\nreturn targets.map(target => ({ json: target }));"
+      },
+      "id": "FN_Normalize",
+      "name": "Normalize Scope",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "targets",
+        "fields": "program,asset.value"
+      },
+      "id": "Mongo_Check",
+      "name": "Check Existing",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 4,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const existingKeys = new Set(items[1].json.existing || []);\n\nreturn items[0].json.targets\n  .filter((target) => !existingKeys.has(`${target.program}:${target.asset.value}`))\n  .map((target) => ({ json: target }));"
+      },
+      "id": "FN_Filter",
+      "name": "Filter New Targets",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "targets"
+      },
+      "id": "Mongo_Insert",
+      "name": "Insert Targets",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 4,
+      "position": [1360, 300]
+    }
+  ],
+  "connections": {
+    "Cron": {
+      "main": [
+        [
+          {
+            "node": "Fetch Bugcrowd",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch HackerOne",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Intigriti",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Bugcrowd": {
+      "main": [
+        [
+          {
+            "node": "Normalize Scope",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch HackerOne": {
+      "main": [
+        [
+          {
+            "node": "Normalize Scope",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Intigriti": {
+      "main": [
+        [
+          {
+            "node": "Normalize Scope",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Scope": {
+      "main": [
+        [
+          {
+            "node": "Check Existing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Existing": {
+      "main": [
+        [
+          {
+            "node": "Filter New Targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter New Targets": {
+      "main": [
+        [
+          {
+            "node": "Insert Targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  }
+}

@@ -1,0 +1,2 @@
+# This file ensures the raw recon data directory is tracked by git
+# Actual recon data files are ignored but directory structure is preserved
